@@ -8,27 +8,26 @@ terraform {
 }
 
 provider "yandex" {
-  service_account_key_file = "./tf_key.json"
-  folder_id                = local.folder_id
-  zone                     = "ru-central1-a"
+  zone = "ru-central1-a"
 }
 
-resource "yandex_vpc_network" "foo" {}
+resource "yandex_vpc_network" "direbo-vpc" {
+}
 
-resource "yandex_vpc_subnet" "foo" {
+resource "yandex_vpc_subnet" "direbo-vpc-subnet" {
   zone           = "ru-central1-a"
-  network_id     = yandex_vpc_network.foo.id
+  network_id     = yandex_vpc_network.direbo-vpc.id
   v4_cidr_blocks = ["10.5.0.0/24"]
 }
 
-resource "yandex_container_registry" "registry1" {
-  name = "registry1"
+resource "yandex_container_registry" "ycr" {
+  name = var.container-registry-name
 }
 
 locals {
-  folder_id = "<INSERT YOUR FOLDER ID>"
+  ycr-id = yandex_container_registry.ycr.id
   service-accounts = toset([
-    "catgpt-sa",
+    var.service-account-name
   ])
   catgpt-sa-roles = toset([
     "container-registry.images.puller",
@@ -37,12 +36,12 @@ locals {
 }
 resource "yandex_iam_service_account" "service-accounts" {
   for_each = local.service-accounts
-  name     = "${local.folder_id}-${each.key}"
+  name     = "${var.folder-id}-${each.key}"
 }
 resource "yandex_resourcemanager_folder_iam_member" "catgpt-roles" {
   for_each  = local.catgpt-sa-roles
-  folder_id = local.folder_id
-  member    = "serviceAccount:${yandex_iam_service_account.service-accounts["catgpt-sa"].id}"
+  folder_id = var.folder-id
+  member    = "serviceAccount:${yandex_iam_service_account.service-accounts[var.service-account-name].id}"
   role      = each.key
 }
 
@@ -51,7 +50,7 @@ data "yandex_compute_image" "coi" {
 }
 resource "yandex_compute_instance" "catgpt-1" {
     platform_id        = "standard-v2"
-    service_account_id = yandex_iam_service_account.service-accounts["catgpt-sa"].id
+    service_account_id = yandex_iam_service_account.service-accounts[var.service-account-name].id
     resources {
       cores         = 2
       memory        = 1
@@ -61,7 +60,7 @@ resource "yandex_compute_instance" "catgpt-1" {
       preemptible = true
     }
     network_interface {
-      subnet_id = "${yandex_vpc_subnet.foo.id}"
+      subnet_id = "${yandex_vpc_subnet.direbo-vpc-subnet.id}"
       nat = true
     }
     boot_disk {
@@ -72,9 +71,11 @@ resource "yandex_compute_instance" "catgpt-1" {
       }
     }
     metadata = {
-      docker-compose = file("${path.module}/docker-compose.yaml")
-      ssh-keys  = "ubuntu:${file("~/.ssh/devops_training.pub")}"
+      docker-compose = templatefile("${path.module}/docker-compose.yaml", {cr-id = local.ycr-id, app-name = var.app-name})
+      ssh-keys  = "ubuntu:${file("${path.module}/.ssh/devops-training.pub")}"
     }
 }
 
-
+output "docker-compose" {
+  value = yandex_compute_instance.catgpt-1.metadata["docker-compose"]
+}
